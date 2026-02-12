@@ -1,0 +1,13 @@
+name: TransMinecraftExpress
+main: com.kfguddat.transminecraftexpress.TransMinecraftExpress
+version: ${version}
+api-version: '1.21'
+author: kfguddat
+commands:
+  tmx:
+    description: Manage TransMinecraftExpress lines and stations
+    usage: /tmx <reload|line|station|cart>
+permissions:
+  tmx.admin:
+    description: Allows managing TransMinecraftExpress settings
+    default: op

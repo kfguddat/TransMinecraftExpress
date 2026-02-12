@@ -1,0 +1,36 @@
+accel: 0.05
+decel: 0.08
+speed-vals:
+  high: 1.6
+  scenic: 0.6
+  station: 0.3
+sign-prefix:
+  line1: "§b"
+  line2: ""
+  line3: ""
+
+lines:
+  example:
+    accel: 0.05
+    decel: 0.08
+    top-speed: 1.6
+    speed-vals:
+      high: 1.6
+      scenic: 0.6
+      station: 0.3
+    stations:
+      "0":
+        name: Start
+        world: world
+        x: 0
+        y: 64
+        z: 0
+    limiters:
+      "0":
+        speed-type: HIGH
+        custom-speed: 0.0
+        world: world
+        x: 50
+        y: 64
+        z: 0
+

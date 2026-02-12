@@ -1,0 +1,53 @@
+# Gradle
+.gradle/
+build/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+*.eclipseinc
+.classpath
+.project
+.settings/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+*.jar
+*.class
+*.war
+*.ear
+*.zip
+
+# Server/test files
+server/
+plugins/
+cache/
+logs/
+world/
+world_nether/
+world_the_end/
+crash-reports/
+eula.txt
+server.properties
+*.json
+
+# IDE cache
+.vscode/settings.json
+.vscode/launch.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Maven/Gradle
+target/
+.m2/

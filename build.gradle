@@ -1,0 +1,47 @@
+plugins {
+
+    id 'java'
+}
+
+group = 'com.kfguddat'
+version = '0.1.0'
+
+def paperVersion = '1.21.11-R0.1-SNAPSHOT'
+def serverDir = file('server')
+
+gradle.projectsEvaluated {
+    // Keep compiler settings consistent with server Java version.
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:${paperVersion}"
+}
+
+processResources {
+    def props = [version: version]
+    inputs.properties props
+    filteringCharset = 'UTF-8'
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
+
+tasks.register('copyPlugin', Copy) {
+    dependsOn(tasks.named('jar'))
+    from(tasks.named('jar'))
+    into(serverDir.toPath().resolve('plugins').toFile())
+}
