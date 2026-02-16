@@ -32,6 +32,10 @@ public final class TransMinecraftExpress extends JavaPlugin {
         getConfig().set("accel", network.getAccel());
         getConfig().set("decel", network.getDecel());
         getConfig().set("scan-speed", network.getScanSpeed());
+        getConfig().set("trainspacing", network.getTrainSpacing());
+        getConfig().set("trains", network.isTrainsEnabled());
+        getConfig().set("animaltrains", network.isAnimalTrainsEnabled());
+        getConfig().set("suffocation", network.isSuffocationProtection());
         getConfig().set("nextstationbar", network.isShowNextStationBar());
         getConfig().set("collision", network.isCollision());
         // Save speed-vals map

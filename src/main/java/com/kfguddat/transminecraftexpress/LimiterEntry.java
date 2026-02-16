@@ -10,17 +10,19 @@ public class LimiterEntry {
     // speedSpec is either the name of a speed-val (e.g. "high") or a numeric string like "1.2"
     public String speedSpec;
     public final String worldName;
+    public final String direction; // "N", "S", "E", "W", or "ALL"
     public final int x, y, z;
 
     // Modified Constructor: Name is assumed to be set/overwritten later if needed, but we keep it final for immutable semantics locally.
     // However, if we need to rename, we create a new instance (as done in renameLimiter).
-    public LimiterEntry(String name, String speedSpec, String worldName, int x, int y, int z) {
+    public LimiterEntry(String name, String speedSpec, String worldName, int x, int y, int z, String direction) {
         this.name = name;
         this.speedSpec = speedSpec;
         this.worldName = worldName;
         this.x = x;
         this.y = y;
         this.z = z;
+        this.direction = (direction == null || direction.isEmpty()) ? "ALL" : direction;
     }
 
     public void setSpeedSpec(String s) { this.speedSpec = s; }
@@ -37,6 +39,7 @@ public class LimiterEntry {
         section.set("x", x);
         section.set("y", y);
         section.set("z", z);
+        section.set("direction", direction);
     }
 
     public static LimiterEntry fromConfig(ConfigurationSection section, String keyName) {
@@ -44,6 +47,7 @@ public class LimiterEntry {
         int x = section.getInt("x", 0);
         int y = section.getInt("y", 64);
         int z = section.getInt("z", 0);
+        String direction = section.getString("direction", "ALL");
         String speed = null;
         if (section.isString("speed")) {
             speed = section.getString("speed");
@@ -58,7 +62,7 @@ public class LimiterEntry {
             }
         }
         if (speed == null) speed = "";
-        LimiterEntry l = new LimiterEntry(keyName, speed, world, x, y, z);
+        LimiterEntry l = new LimiterEntry(keyName, speed, world, x, y, z, direction);
         return l;
     }
 }

@@ -1,5 +1,9 @@
 accel: 0.05
 decel: 0.08
+trainspacing: 1.5
+trains: true
+animaltrains: true
+suffocation: false
 speed-vals:
   high: 1.6
   scenic: 0.6

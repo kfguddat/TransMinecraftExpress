@@ -12,6 +12,10 @@ public class NetworkManager {
     private double accel = 0.05;
     private double decel = 0.08;
     private double scanSpeed = 5.0; // blocks per second
+    private double trainSpacing = 1.5;
+    private boolean trainsEnabled = true;
+    private boolean animalTrainsEnabled = true;
+    private boolean suffocationProtection = false;
     private boolean showNextStationBar = true;
     private boolean collision = true; // Default to collision enabled
 
@@ -54,6 +58,10 @@ public class NetworkManager {
         this.accel = config.getDouble("accel", this.accel);
         this.decel = config.getDouble("decel", this.decel);
         this.scanSpeed = config.getDouble("scan-speed", this.scanSpeed);
+        this.trainSpacing = config.getDouble("trainspacing", this.trainSpacing);
+        this.trainsEnabled = config.getBoolean("trains", this.trainsEnabled);
+        this.animalTrainsEnabled = config.getBoolean("animaltrains", this.animalTrainsEnabled);
+        this.suffocationProtection = config.getBoolean("suffocation", this.suffocationProtection);
         this.showNextStationBar = config.getBoolean("nextstationbar", this.showNextStationBar);
         this.collision = config.getBoolean("collision", this.collision);
         // load speed-vals map
@@ -78,9 +86,17 @@ public class NetworkManager {
     public double getAccel() { return accel; }
     public double getDecel() { return decel; }
     public double getScanSpeed() { return scanSpeed; }
+    public double getTrainSpacing() { return trainSpacing; }
+    public boolean isTrainsEnabled() { return trainsEnabled; }
+    public boolean isAnimalTrainsEnabled() { return animalTrainsEnabled; }
+    public boolean isSuffocationProtection() { return suffocationProtection; }
     public void setAccel(double v) { this.accel = v; }
     public void setDecel(double v) { this.decel = v; }
     public void setScanSpeed(double v) { this.scanSpeed = v; }
+    public void setTrainSpacing(double v) { this.trainSpacing = v; }
+    public void setTrainsEnabled(boolean v) { this.trainsEnabled = v; }
+    public void setAnimalTrainsEnabled(boolean v) { this.animalTrainsEnabled = v; }
+    public void setSuffocationProtection(boolean v) { this.suffocationProtection = v; }
     public boolean isShowNextStationBar() { return showNextStationBar; }
     
     public boolean isCollision() { return collision; }
@@ -212,7 +228,7 @@ public class NetworkManager {
              if (l.name.equalsIgnoreCase(oldName)) {
                  for (LimiterEntry other : line.limiters) if (other != l && other.name.equalsIgnoreCase(newName)) return false;
                  // Since LimiterEntry has public fields but final name, recreate
-                 LimiterEntry newLimiter = new LimiterEntry(newName, l.speedSpec, l.worldName, l.x, l.y, l.z);
+                 LimiterEntry newLimiter = new LimiterEntry(newName, l.speedSpec, l.worldName, l.x, l.y, l.z, l.direction);
                  line.limiters.set(i, newLimiter);
                  return true;
              }
@@ -345,7 +361,7 @@ public class NetworkManager {
                 LimiterEntry l = (LimiterEntry)n.obj;
                 String newName = lastStation + "_" + counter;
                 if (!l.name.equals(newName)) {
-                    swaps.put(l, new LimiterEntry(newName, l.speedSpec, l.worldName, l.x, l.y, l.z));
+                    swaps.put(l, new LimiterEntry(newName, l.speedSpec, l.worldName, l.x, l.y, l.z, l.direction));
                 }
                 counter++;
             }

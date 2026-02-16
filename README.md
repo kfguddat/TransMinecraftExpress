@@ -4,14 +4,17 @@ A Minecraft Spigot plugin for creating automated minecart transit lines with cus
 
 ## Features
 
-- **Circular & Linear Line Support**: Create both loop-based and linear transit lines
-- **Automatic Path Scanning**: Record rail paths with in-game cart scanning
-- **Station Management**: Add stations with automatic naming and ordering
-- **Speed Controls**: Set acceleration, deceleration, and speed limits per line or at specific limiters
-- **Display System**: Configurable signs with dynamic station information and distance tracking
+- **Train Lines & Stations**: Create both loop-based and linear transit lines
+- **Circular Lines**: Like a record baby, right round right round
+- **No Powered Rails needed**: Just use normal rails (or powered ones if you prefer)
+- **Path Scanning for really quick minecarts**: Vanilla Minecarts are a bit buggy, but with path scanning, you can go as fast as you can load your chunks
+- **Display System**: Configurable signs (hanging, standing and wall) with line, station and last station information
 - **Boss Bar Progress**: Real-time distance and destination display for passengers
-- **Path Guidance**: Automatic steering along recorded paths with collision handling
-- **Command-based Management**: Full CLI for creating, managing, and deleting transit infrastructure
+- **Multi-Cart Trains**: Players can click on TMX carts to form a linked train
+- **Animal Trains**: Leashed animals can be loaded into trains automatically
+- **Reconnect/Exit Handling**: Animal transporters leave with animals + reattached leads; normal riders can remain in carts
+- **Command-based Management**: easily understandable commands for creating, managing, and deleting transit infrastructure
+- **Human-readable config file**: The `config.yml` is easily readable
 
 ## Installation
 
@@ -23,31 +26,56 @@ A Minecraft Spigot plugin for creating automated minecart transit lines with cus
 
 ## Quick Start
 
-### Create a Transit Line
+### Build a Minecart rail track
+ 
+- Use any kind of track you want (no need for powered rails)
+- Build twists, turns and long bridges to your heart's desire!
+
+### Create and scan a Line with stations
+
+- Create stations by standing on a piece of track. 
+- For the starting/first station, you should look in the direction the cart is supposed to go off, and add a 'true' at the end to signify its the first station. 
+- Afterwards, you can scan the line. It will automatically detect the end or if the line is a loop and save the track to a .bin file. 
+- All stations afterwards will be ordered automatically in the order they appear in the .bin file. 
+- Add as many stations as you want.
 
 ```
-/tmx create line MyLine #FF5733
-/tmx create start MyLine
-/tmx create station MyLine Station1 true
-/tmx create station MyLine Station2
-/tmx scan MyLine
+/tmx create line S42 #FF5733 
+/tmx create station S42 Ostkreuz true
+/tmx scan S42
+/tmx create station S42 Gesundbrunnen
+/tmx create station S42 Westkreuz
+/tmx create station S42 Südkreuz
 ```
 
 ### Set Speed Parameters
 
+- Speedvals are the top speed you can reach using the accel value. 
+- `station` is a mandatory, but configurable speedval, it's the speed you have when first boarding a train.
+- You can add as many speedvals as you want, name them as you want aswell.
+- `accel` and `decel` are the acceleration and deceleration parameters
+- scanspeed the speed you scan your track with, in my experience, 15 works quite well
+
 ```
+/tmx set speedval station 3
+/tmx set speedval scenic 20
+/tmx set speedval express 100
 /tmx set accel 0.05
 /tmx set decel 0.08
-/tmx set scanspeed 2.0
-/tmx set speedval station 0.3
-/tmx set speedval express 0.5
+/tmx set scanspeed 15.0
 ```
 
 ### Add Speed Limiters
 
+- Limiters are created like start stations, as they have a direction (so you can use a piece of track in two directions)
+- you can put two limiters on the same block with different directions
+- they govern the top speed a minecart goes when it passes the Limiter. 
+- If its faster, it will decelerate, if its quicker, well, weeeeeeeee
+- Limiters are named automatically, e.g. `Ostkreuz_1` for the first limit after the station `Ostkreuz`
+
 ```
-/tmx create limit MyLine station
-/tmx create limit MyLine express
+/tmx create limit S42 station
+/tmx create limit S42 express
 ```
 
 ### Use a Line
@@ -56,6 +84,29 @@ A Minecraft Spigot plugin for creating automated minecart transit lines with cus
 2. Put the line name on the second line
 3. Put a station name on the third line
 4. Right-click the sign to spawn a cart to that station
+
+### Create a Player Train
+
+- Player A boards a TMX cart.
+- Player B right-clicks that occupied TMX cart.
+- A follower cart is created behind the train tail and Player B is seated in it.
+- Additional players can keep joining; each new cart is appended at the end.
+
+```
+/tmx set trains true
+/tmx set trainspacing 1.5
+```
+
+### Create an Animal Train
+
+- Enable animal trains.
+- Hold animals on leads and right-click a TMX sign or TMX cart.
+- Animals are moved into follower carts behind the player; leads are removed.
+- If that transporter leaves, animals are unloaded and leads are reattached.
+
+```
+/tmx set animaltrains true
+```
 
 ## Command Reference
 
@@ -76,9 +127,13 @@ A Minecraft Spigot plugin for creating automated minecart transit lines with cus
 - `/tmx set accel <value>` - Global acceleration (blocks/tick²)
 - `/tmx set decel <value>` - Global deceleration
 - `/tmx set scanspeed <value>` - Speed during path scanning
+- `/tmx set trainspacing <value>` - Distance between linked train carts (blocks)
+- `/tmx set trains <true|false>` - Enable/disable joining a train by right-clicking TMX carts
+- `/tmx set animaltrains <true|false>` - Enable/disable animal train creation/joining from leads
+- `/tmx set suffocation <true|false>` - Toggle train-animal suffocation handling (`false` = no suffocation damage in TMX train carts)
 - `/tmx set speedval <name> <value>` - Define a named speed (e.g., "station", "express")
-- `/tmx set signprefix <1|2|3> <text>` - Customize sign display text
-- `/tmx set collision <true|false>` - Enable/disable NPC collision
+- `/tmx set signprefix <1|2|3> <text>` - Customize sign and bossbar display text
+- `/tmx set collision <true|false>` - Enable/disable entity collision
 - `/tmx set nextstationbar <true|false>` - Show boss bar with station info
 - `/tmx set linecolor <line> <hexColor>` - Change line boss bar color
 - `/tmx set end <line>` - Manually set the end point (player location)
@@ -97,26 +152,10 @@ A Minecraft Spigot plugin for creating automated minecart transit lines with cus
 ### Other
 - `/tmx reload` - Reload configuration from file
 
-## Configuration
-
-Edit `plugins/config.yml` to customize:
-
-```yaml
-acceleration: 0.05
-deceleration: 0.08
-scan_speed: 2.0
-show_next_station_bar: true
-collision_enabled: false
-
-speeds:
-  station: 0.3
-  express: 0.5
-
-sign_prefixes:
-  line1: "§7[Line]"
-  line2: "§7[Stn]"
-  line3: "§7[End]"
-```
+### Interaction Behaviors (No Direct Command)
+- Right-click an occupied TMX cart to join as follower (when `trains=true`)
+- Right-click a TMX sign to spawn/board a cart at that station
+- Right-click with leashed animals to create animal train followers (when `animaltrains=true`)
 
 ## How It Works
 
@@ -136,7 +175,7 @@ sign_prefixes:
 **Linear Line**:
 - Start Point ≠ End Point
 - Cart is ejected at the end and removed
-- Signs show the last station as the destination
+- Signs show the first/start station as the destination
 
 ## Requirements
 
@@ -157,20 +196,12 @@ Built with:
 ### Building
 
 ```bash
-gradle build
+gradle copyPlugin
 ```
 
-Output JAR: `build/libs/TransMinecraftExpress-0.1.0.jar`
+Output JAR: `build/libs/TransMinecraftExpress.jar`
 
-## Troubleshooting
-
-**Cart not moving**: Ensure the path was scanned with `/tmx scan` and at least 1 station exists.
-
-**Path not recognized**: Run `/tmx scan` again to re-record the route.
-
-**Signals "Distance = 0"**: This is normal when the cart is very close to or at a station.
-
-**Wobbling on loops**: Ensure the start and end points exactly match (same block coordinate and direction).
+Copies plugin to: `server/plugins/TransMinecraftExpress.jar`
 
 ## Support
 

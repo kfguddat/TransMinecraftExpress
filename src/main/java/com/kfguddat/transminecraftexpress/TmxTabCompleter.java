@@ -34,7 +34,7 @@ public class TmxTabCompleter implements TabCompleter {
         
         // /tmx set ...
         if (a0.equals("set")) {
-            if (args.length == 2) return filter(args[1], "accel", "decel", "scanspeed", "speedval", "signprefix", "collision", "end", "nextstationbar", "linecolor");
+            if (args.length == 2) return filter(args[1], "accel", "decel", "scanspeed", "trainspacing", "trains", "animaltrains", "suffocation", "speedval", "signprefix", "collision", "end", "nextstationbar", "linecolor");
             
             String a1 = args[1].toLowerCase(Locale.ROOT);
             if (a1.equals("collision") && args.length == 3) {
@@ -43,6 +43,15 @@ public class TmxTabCompleter implements TabCompleter {
             if (a1.equals("nextstationbar") && args.length == 3) {
                  return filter(args[2], "true", "false");
             }
+              if (a1.equals("trains") && args.length == 3) {
+                  return filter(args[2], "true", "false");
+              }
+              if (a1.equals("animaltrains") && args.length == 3) {
+                  return filter(args[2], "true", "false");
+              }
+              if (a1.equals("suffocation") && args.length == 3) {
+                  return filter(args[2], "true", "false");
+              }
             if (a1.equals("speedval")) {
                 if (args.length == 3) {
                     // suggest existing speedval names to overwrite

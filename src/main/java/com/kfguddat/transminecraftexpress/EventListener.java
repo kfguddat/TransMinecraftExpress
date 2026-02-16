@@ -5,7 +5,10 @@ import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.Sign;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Animals;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Minecart;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Vehicle;
@@ -14,10 +17,14 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.vehicle.VehicleExitEvent;
 import org.bukkit.event.vehicle.VehicleEntityCollisionEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.persistence.PersistentDataType;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
 
 public class EventListener implements Listener {
     private final TransMinecraftExpress plugin;
@@ -25,6 +32,36 @@ public class EventListener implements Listener {
     private final NamespacedKey lineKey;
     private final NamespacedKey indexKey;
     private final NamespacedKey limitKey;
+    private final NamespacedKey trainLeaderKey;
+    private final java.util.Map<java.util.UUID, AnimalTrainSession> animalTrainSessions = new java.util.HashMap<>();
+    private final java.util.Set<java.util.UUID> disconnectingPlayers = new java.util.HashSet<>();
+
+    private static class LeashLink {
+        final java.util.UUID entityId;
+        final java.util.UUID holderId;
+        final boolean holderIsPlayer;
+
+        LeashLink(java.util.UUID entityId, java.util.UUID holderId, boolean holderIsPlayer) {
+            this.entityId = entityId;
+            this.holderId = holderId;
+            this.holderIsPlayer = holderIsPlayer;
+        }
+    }
+
+    private static class AnimalTrainSession {
+        final java.util.UUID rootCartId;
+        final java.util.List<LeashLink> links;
+
+        AnimalTrainSession(java.util.UUID rootCartId, java.util.List<LeashLink> links) {
+            this.rootCartId = rootCartId;
+            this.links = links;
+        }
+    }
+
+    private void status(Player player, String message) {
+        if (player == null || message == null) return;
+        player.spigot().sendMessage(ChatMessageType.ACTION_BAR, TextComponent.fromLegacyText(message));
+    }
 
     public EventListener(TransMinecraftExpress plugin, NetworkManager network) {
         this.plugin = plugin;
@@ -32,6 +69,7 @@ public class EventListener implements Listener {
         this.lineKey = new NamespacedKey(plugin, "line");
         this.indexKey = new NamespacedKey(plugin, "node_index");
         this.limitKey = new NamespacedKey(plugin, "speed_limit");
+        this.trainLeaderKey = new NamespacedKey(plugin, "train_leader");
     }
 
     @EventHandler
@@ -89,11 +127,11 @@ public class EventListener implements Listener {
         // line 3 left as whatever the player typed (custom text)
 
         if (line == null) {
-            event.getPlayer().sendMessage("§cWarning: Line '" + lineName + "' does not exist (yet).");
+            status(event.getPlayer(), "§cWarning: Line '" + lineName + "' does not exist (yet).");
         } else if (stationName != null && !stationName.isEmpty()) {
             boolean found = false;
             for (StationEntry s : line.stations) if (s.name.equalsIgnoreCase(stationName)) { found = true; break; }
-            if (!found) event.getPlayer().sendMessage("§cWarning: Station '" + stationName + "' not found on line '" + lineName + "'.");
+            if (!found) status(event.getPlayer(), "§cWarning: Station '" + stationName + "' not found on line '" + lineName + "'.");
         }
     }
 
@@ -119,6 +157,332 @@ public class EventListener implements Listener {
             }
         }
     }
+    
+
+    // Unified Entity Interaction for Link/Follow Logic
+    @EventHandler
+    public void onEntityInteract(org.bukkit.event.player.PlayerInteractEntityEvent event) {
+        if (!network.isTrainsEnabled()) return;
+        
+        // Debug - Force Message
+        // event.getPlayer().sendMessage("Debug: Entity Clicked " + event.getRightClicked().getType());
+        
+        if (event.getRightClicked() instanceof Minecart) {
+             // Check hand to prevent double firing
+             if (event.getHand() != EquipmentSlot.HAND) return;
+             
+             Player player = event.getPlayer();
+             Minecart clicked = (Minecart) event.getRightClicked();
+             
+             // player.sendMessage("Debug: Checking TMX data...");
+             
+             if (clicked.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
+                
+                // player.sendMessage("Debug: TMX Valid.");
+
+                // Prevent sitting on occupied carts (optional, but good for trains)
+                if (!clicked.getPassengers().isEmpty()) {
+                    
+                    if (clicked.getPassengers().contains(player)) return;
+                    event.setCancelled(true);
+                    
+                    // Allow creating a follower cart if player is not riding anything
+                    if (player.getVehicle() == null) {
+                         createFollowerCart(player, clicked);
+                    } else {
+                        status(player, "§cYou are already in a vehicle!");
+                    }
+                } else {
+                    // Empty cart - Normal ride
+                }
+            } else {
+                 // player.sendMessage("Debug: Not TMX.");
+            }
+        }
+    }
+    
+    private void createFollowerCart(Player player, Minecart leader) {
+        Minecart attachTo = findTrainTail(leader);
+
+        String lineKeyStr = leader.getPersistentDataContainer().get(lineKey, PersistentDataType.STRING);
+        if (lineKeyStr == null) {
+            status(player, "§cError: No line data on leader.");
+            return;
+        }
+        
+        Line line = network.getLine(lineKeyStr);
+        if (line == null) {
+               status(player, "§cError: Line not found in network.");
+             return;
+        }
+        
+        Integer leaderIdx = attachTo.getPersistentDataContainer().get(new NamespacedKey(plugin, "path_index"), PersistentDataType.INTEGER);
+        if (leaderIdx == null) leaderIdx = 0;
+        
+        // Use path logic to spawn cart behind
+        int spawnIdx = leaderIdx;
+        double targetDist = network.getTrainSpacing();
+        double currentDist = 0;
+        
+        if (!line.verifiedPath.isEmpty()) {
+            // Scan backwards from leader's position
+            for (int i = leaderIdx - 1; i >= 0; i--) {
+                org.bukkit.util.Vector p1 = line.verifiedPath.get(i);
+                org.bukkit.util.Vector p2 = line.verifiedPath.get(i+1);
+                currentDist += p1.distance(p2);
+                spawnIdx = i;
+                if (currentDist >= targetDist) break;
+            }
+            
+            // Circular wrap logic
+             if (currentDist < targetDist && line.startPoint != null && line.endPoint != null) {
+                 if (line.startPoint.world.equals(line.endPoint.world) &&
+                     line.startPoint.x == line.endPoint.x &&
+                     line.startPoint.y == line.endPoint.y &&
+                     line.startPoint.z == line.endPoint.z) {
+                         int last = line.verifiedPath.size() - 2;
+                         for (int i = last; i >= 0; i--) {
+                             if (i+1 >= line.verifiedPath.size()) continue;
+                             org.bukkit.util.Vector p1 = line.verifiedPath.get(i);
+                             org.bukkit.util.Vector p2 = line.verifiedPath.get(i+1);
+                             currentDist += p1.distance(p2);
+                             spawnIdx = i;
+                             if (currentDist >= targetDist) break;
+                         }
+                     }
+            }
+        }
+        
+        // Calculate Spawn Location
+           Location spawnLoc = attachTo.getLocation();
+        if (!line.verifiedPath.isEmpty() && spawnIdx >= 0 && spawnIdx < line.verifiedPath.size()) {
+             org.bukkit.util.Vector v = line.verifiedPath.get(spawnIdx);
+               spawnLoc = new Location(attachTo.getWorld(), v.getX() + 0.5, v.getY(), v.getZ() + 0.5);
+             if (spawnIdx + 1 < line.verifiedPath.size()) {
+                 org.bukkit.util.Vector next = line.verifiedPath.get(spawnIdx+1);
+                 spawnLoc.setDirection(next.clone().subtract(v));
+             } else if (spawnIdx > 0) {
+                 // Last point look at previous?
+                 org.bukkit.util.Vector prev = line.verifiedPath.get(spawnIdx-1);
+                 spawnLoc.setDirection(v.clone().subtract(prev));
+             }
+        } else {
+             // Fallback
+               spawnLoc.add(attachTo.getLocation().getDirection().multiply(-2));
+        }
+
+        Minecart follower = (Minecart) spawnLoc.getWorld().spawnEntity(spawnLoc, EntityType.MINECART);
+        follower.getPersistentDataContainer().set(lineKey, PersistentDataType.STRING, lineKeyStr);
+        follower.getPersistentDataContainer().set(new NamespacedKey(plugin, "path_index"), PersistentDataType.INTEGER, spawnIdx);
+        follower.getPersistentDataContainer().set(trainLeaderKey, PersistentDataType.STRING, attachTo.getUniqueId().toString());
+        
+        // Copy target station info from leader
+        if (leader.getPersistentDataContainer().has(indexKey, PersistentDataType.INTEGER)) {
+             follower.getPersistentDataContainer().set(indexKey, PersistentDataType.INTEGER, 
+                leader.getPersistentDataContainer().get(indexKey, PersistentDataType.INTEGER));
+        }
+
+        if (leader.getPersistentDataContainer().has(limitKey, PersistentDataType.DOUBLE)) {
+            follower.getPersistentDataContainer().set(limitKey, PersistentDataType.DOUBLE,
+            leader.getPersistentDataContainer().get(limitKey, PersistentDataType.DOUBLE));
+        }
+        
+        follower.addPassenger(player);
+        status(player, "§aJoined train!");
+
+        tryCreateAnimalTrain(player, follower, line, lineKeyStr);
+    }
+
+    private Minecart findTrainTail(Minecart start) {
+        Minecart current = start;
+        java.util.Set<java.util.UUID> visited = new java.util.HashSet<>();
+
+        while (current != null && visited.add(current.getUniqueId())) {
+            Minecart child = null;
+            for (Minecart cart : current.getWorld().getEntitiesByClass(Minecart.class)) {
+                if (!cart.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) continue;
+                String leaderId = cart.getPersistentDataContainer().get(trainLeaderKey, PersistentDataType.STRING);
+                if (leaderId != null && leaderId.equals(current.getUniqueId().toString())) {
+                    child = cart;
+                    break;
+                }
+            }
+
+            if (child == null) return current;
+            current = child;
+        }
+
+        return start;
+    }
+
+    private Minecart spawnFollowerForTrain(Minecart leader, Line line, String lineKeyStr) {
+        Integer leaderIdx = leader.getPersistentDataContainer().get(new NamespacedKey(plugin, "path_index"), PersistentDataType.INTEGER);
+        if (leaderIdx == null) leaderIdx = 0;
+
+        int spawnIdx = leaderIdx;
+        double targetDist = Math.max(0.5, network.getTrainSpacing());
+        double currentDist = 0;
+
+        if (!line.verifiedPath.isEmpty()) {
+            for (int i = leaderIdx - 1; i >= 0; i--) {
+                org.bukkit.util.Vector p1 = line.verifiedPath.get(i);
+                org.bukkit.util.Vector p2 = line.verifiedPath.get(i + 1);
+                currentDist += p1.distance(p2);
+                spawnIdx = i;
+                if (currentDist >= targetDist) break;
+            }
+
+            if (currentDist < targetDist && line.startPoint != null && line.endPoint != null) {
+                if (line.startPoint.world.equals(line.endPoint.world) &&
+                    line.startPoint.x == line.endPoint.x &&
+                    line.startPoint.y == line.endPoint.y &&
+                    line.startPoint.z == line.endPoint.z) {
+                    int last = line.verifiedPath.size() - 2;
+                    for (int i = last; i >= 0; i--) {
+                        if (i + 1 >= line.verifiedPath.size()) continue;
+                        org.bukkit.util.Vector p1 = line.verifiedPath.get(i);
+                        org.bukkit.util.Vector p2 = line.verifiedPath.get(i + 1);
+                        currentDist += p1.distance(p2);
+                        spawnIdx = i;
+                        if (currentDist >= targetDist) break;
+                    }
+                }
+            }
+        }
+
+        Location spawnLoc = leader.getLocation();
+        if (!line.verifiedPath.isEmpty() && spawnIdx >= 0 && spawnIdx < line.verifiedPath.size()) {
+            org.bukkit.util.Vector v = line.verifiedPath.get(spawnIdx);
+            spawnLoc = new Location(leader.getWorld(), v.getX() + 0.5, v.getY(), v.getZ() + 0.5);
+            if (spawnIdx + 1 < line.verifiedPath.size()) {
+                org.bukkit.util.Vector next = line.verifiedPath.get(spawnIdx + 1);
+                spawnLoc.setDirection(next.clone().subtract(v));
+            } else if (spawnIdx > 0) {
+                org.bukkit.util.Vector prev = line.verifiedPath.get(spawnIdx - 1);
+                spawnLoc.setDirection(v.clone().subtract(prev));
+            }
+        } else {
+            spawnLoc.add(leader.getLocation().getDirection().multiply(-2));
+        }
+
+        Minecart follower = (Minecart) spawnLoc.getWorld().spawnEntity(spawnLoc, EntityType.MINECART);
+        follower.getPersistentDataContainer().set(lineKey, PersistentDataType.STRING, lineKeyStr);
+        follower.getPersistentDataContainer().set(new NamespacedKey(plugin, "path_index"), PersistentDataType.INTEGER, spawnIdx);
+        follower.getPersistentDataContainer().set(trainLeaderKey, PersistentDataType.STRING, leader.getUniqueId().toString());
+
+        if (leader.getPersistentDataContainer().has(indexKey, PersistentDataType.INTEGER)) {
+            follower.getPersistentDataContainer().set(indexKey, PersistentDataType.INTEGER,
+                leader.getPersistentDataContainer().get(indexKey, PersistentDataType.INTEGER));
+        }
+        if (leader.getPersistentDataContainer().has(limitKey, PersistentDataType.DOUBLE)) {
+            follower.getPersistentDataContainer().set(limitKey, PersistentDataType.DOUBLE,
+                leader.getPersistentDataContainer().get(limitKey, PersistentDataType.DOUBLE));
+        }
+
+        return follower;
+    }
+
+    private java.util.List<LeashLink> collectLeashChain(Player player) {
+        java.util.Map<java.util.UUID, LivingEntity> allLeashed = new java.util.HashMap<>();
+        for (LivingEntity entity : player.getWorld().getLivingEntities()) {
+            if (!entity.isLeashed()) continue;
+            allLeashed.put(entity.getUniqueId(), entity);
+        }
+
+        java.util.List<LeashLink> out = new java.util.ArrayList<>();
+        java.util.Set<java.util.UUID> visited = new java.util.HashSet<>();
+        java.util.ArrayDeque<LivingEntity> queue = new java.util.ArrayDeque<>();
+
+        for (LivingEntity entity : allLeashed.values()) {
+            try {
+                Entity holder = entity.getLeashHolder();
+                if (holder instanceof Player && holder.getUniqueId().equals(player.getUniqueId())) {
+                    queue.add(entity);
+                }
+            } catch (IllegalStateException ignored) {
+            }
+        }
+
+        while (!queue.isEmpty()) {
+            LivingEntity current = queue.poll();
+            if (!visited.add(current.getUniqueId())) continue;
+
+            try {
+                Entity holder = current.getLeashHolder();
+                if (holder != null) {
+                    boolean holderIsPlayer = holder instanceof Player;
+                    out.add(new LeashLink(current.getUniqueId(), holder.getUniqueId(), holderIsPlayer));
+                }
+            } catch (IllegalStateException ignored) {
+            }
+
+            for (LivingEntity candidate : allLeashed.values()) {
+                if (visited.contains(candidate.getUniqueId())) continue;
+                try {
+                    Entity holder = candidate.getLeashHolder();
+                    if (holder != null && holder.getUniqueId().equals(current.getUniqueId())) {
+                        queue.add(candidate);
+                    }
+                } catch (IllegalStateException ignored) {
+                }
+            }
+        }
+
+        return out;
+    }
+
+    private void tryCreateAnimalTrain(Player player, Minecart rootCart, Line line, String lineKeyStr) {
+        if (!network.isAnimalTrainsEnabled()) return;
+
+        java.util.List<LeashLink> chain = collectLeashChain(player);
+        if (chain.isEmpty()) return;
+
+        Minecart leader = rootCart;
+        java.util.List<LeashLink> placed = new java.util.ArrayList<>();
+
+        for (LeashLink link : chain) {
+            Entity e = Bukkit.getEntity(link.entityId);
+            if (!(e instanceof LivingEntity)) continue;
+            LivingEntity animal = (LivingEntity) e;
+            animal.setLeashHolder(null);
+            Minecart animalCart = spawnFollowerForTrain(leader, line, lineKeyStr);
+            animalCart.addPassenger(animal);
+            leader = animalCart;
+            placed.add(link);
+        }
+
+        animalTrainSessions.put(player.getUniqueId(), new AnimalTrainSession(rootCart.getUniqueId(), placed));
+        status(player, "§aAnimal train created (" + placed.size() + ").");
+    }
+
+    private void handleTrainLeaderExit(Minecart leader) {
+        String leaderId = leader.getUniqueId().toString();
+        
+        java.util.List<Minecart> nearby = leader.getNearbyEntities(20, 10, 20).stream()
+            .filter(e -> e instanceof Minecart)
+            .map(e -> (Minecart)e)
+            .collect(java.util.stream.Collectors.toList());
+            
+        NamespacedKey leaderKey = new NamespacedKey(plugin, "train_leader");
+        
+        for (Minecart follower : nearby) {
+            String targetId = follower.getPersistentDataContainer().get(leaderKey, PersistentDataType.STRING);
+            if (targetId != null && targetId.equals(leaderId)) {
+                // Found the follower. Promote it.
+                promoteFollower(follower, leader);
+            }
+        }
+    }
+    
+    private void promoteFollower(Minecart follower, Minecart oldLeader) {
+        follower.getPersistentDataContainer().remove(new NamespacedKey(plugin, "train_leader"));
+        for (org.bukkit.entity.Entity passenger : follower.getPassengers()) {
+            if (passenger instanceof Player) {
+                status((Player) passenger, "§eThe conductor left. You are now the conductor!");
+            }
+        }
+    }
+
 
     private void handleStationSign(Player player, Sign sign, String lineName) {
         String rawLine = sign.getLine(1);
@@ -137,12 +501,12 @@ public class EventListener implements Listener {
 
         Line line = network.getLine(lineName);
         if (line == null) {
-            player.sendMessage("§cError: Line '" + lineName + "' not defined.");
+            status(player, "§cError: Line '" + lineName + "' not defined.");
             return;
         }
 
         if (stationName == null || stationName.isEmpty()) {
-            player.sendMessage("§cError: Station name missing on sign (line 2).");
+            status(player, "§cError: Station name missing on sign (line 2).");
             return;
         }
 
@@ -171,7 +535,7 @@ public class EventListener implements Listener {
         }
         
         if (targetStation == null) {
-            player.sendMessage("§cError: Station '" + stationName + "' not found on line.");
+            status(player, "§cError: Station '" + stationName + "' not found on line.");
             return;
         }
         
@@ -231,17 +595,53 @@ public class EventListener implements Listener {
         // Convert blocks/sec to blocks/tick
         cart.getPersistentDataContainer().set(limitKey, PersistentDataType.DOUBLE, stationSpeed / 20.0);
 
+        if (targetStation.pathIndex >= 0) {
+            cart.getPersistentDataContainer().set(new NamespacedKey(plugin, "path_index"), PersistentDataType.INTEGER, targetStation.pathIndex);
+        }
+
         cart.addPassenger(player);
+
+        tryCreateAnimalTrain(player, cart, line, lineName);
     }
     
     @EventHandler
     public void onVehicleEntityCollision(VehicleEntityCollisionEvent event) {
+        Vehicle v = event.getVehicle();
+        if (!(v instanceof Minecart)) return;
+
+        Minecart vehicleCart = (Minecart) v;
+        boolean vehicleIsTmx = vehicleCart.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING);
+        if (!vehicleIsTmx) return;
+
+        // Always prevent TMX minecarts from pushing other TMX minecarts.
+        if (event.getEntity() instanceof Minecart) {
+            Minecart other = (Minecart) event.getEntity();
+            if (other.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
+                event.setCancelled(true);
+                event.setCollisionCancelled(true);
+                return;
+            }
+        }
+
+        // Keep existing global collision toggle for non-TMX-minecart entities.
         if (!network.isCollision()) {
-             Vehicle v = event.getVehicle();
-             if (v instanceof Minecart && v.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
-                 event.setCancelled(true);
-                 event.setCollisionCancelled(true); // Ensure collision physics are disabled
-             }
+            event.setCancelled(true);
+            event.setCollisionCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void onEntityDamage(EntityDamageEvent event) {
+        if (network.isSuffocationProtection()) return;
+        if (event.getCause() != EntityDamageEvent.DamageCause.SUFFOCATION) return;
+        if (!(event.getEntity() instanceof Animals)) return;
+
+        Entity entity = event.getEntity();
+        if (entity.getVehicle() instanceof Minecart) {
+            Minecart cart = (Minecart) entity.getVehicle();
+            if (cart.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
+                event.setCancelled(true);
+            }
         }
     }
 
@@ -250,10 +650,119 @@ public class EventListener implements Listener {
         Vehicle v = event.getVehicle();
         if (v instanceof Minecart) {
             if (v.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
+                if (event.getExited() instanceof Player) {
+                    Player exited = (Player) event.getExited();
+
+                    // On disconnect, keep non-animal riders in their cart for rejoin.
+                    if (disconnectingPlayers.contains(exited.getUniqueId()) && !animalTrainSessions.containsKey(exited.getUniqueId())) {
+                        return;
+                    }
+
+                    handleAnimalTrainOwnerExit(exited, (Minecart) v);
+                }
+                // Check if this cart is a leader of a train
+                handleTrainLeaderExit((Minecart) v);
+                
                 Bukkit.getScheduler().runTask(plugin, v::remove);
             }
         }
     }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        Player player = event.getPlayer();
+        disconnectingPlayers.add(player.getUniqueId());
+
+        if (animalTrainSessions.containsKey(player.getUniqueId()) && player.getVehicle() instanceof Minecart) {
+            Minecart cart = (Minecart) player.getVehicle();
+            if (cart.getPersistentDataContainer().has(lineKey, PersistentDataType.STRING)) {
+                handleAnimalTrainOwnerExit(player, cart);
+            }
+        }
+
+        Bukkit.getScheduler().runTaskLater(plugin, () -> disconnectingPlayers.remove(player.getUniqueId()), 40L);
+    }
+
+    private void handleAnimalTrainOwnerExit(Player player, Minecart exitedCart) {
+        if (!network.isAnimalTrainsEnabled()) return;
+
+        AnimalTrainSession session = animalTrainSessions.get(player.getUniqueId());
+        if (session == null) return;
+        if (!session.rootCartId.equals(exitedCart.getUniqueId())) return;
+
+        java.util.Map<java.util.UUID, LivingEntity> released = new java.util.HashMap<>();
+        int idx = 0;
+
+        for (LeashLink link : session.links) {
+            Entity entity = Bukkit.getEntity(link.entityId);
+            if (!(entity instanceof LivingEntity)) continue;
+            LivingEntity animal = (LivingEntity) entity;
+
+            if (animal.getVehicle() instanceof Minecart) {
+                Minecart c = (Minecart) animal.getVehicle();
+                animal.leaveVehicle();
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (c.isValid() && c.getPassengers().isEmpty()) c.remove();
+                });
+            }
+
+            Location dropLoc = findSafeDropLocation(player, idx++);
+            animal.teleport(dropLoc);
+            released.put(animal.getUniqueId(), animal);
+        }
+
+        // Restore leash links (player links first, then entity-to-entity links).
+        for (LeashLink link : session.links) {
+            LivingEntity child = released.get(link.entityId);
+            if (child == null) continue;
+            if (link.holderIsPlayer) {
+                child.setLeashHolder(player);
+            }
+        }
+        for (LeashLink link : session.links) {
+            if (link.holderIsPlayer) continue;
+            LivingEntity child = released.get(link.entityId);
+            Entity holder = released.get(link.holderId);
+            if (child == null) continue;
+            if (holder instanceof LivingEntity) {
+                child.setLeashHolder(holder);
+            } else {
+                child.setLeashHolder(player);
+            }
+        }
+
+        animalTrainSessions.remove(player.getUniqueId());
+        status(player, "§eAnimal leads reattached.");
+    }
+
+    private Location findSafeDropLocation(Player player, int index) {
+        Location base = player.getLocation().clone();
+        org.bukkit.util.Vector backward = base.getDirection().clone().setY(0);
+        if (backward.lengthSquared() < 0.0001) backward = new org.bukkit.util.Vector(0, 0, 1);
+        backward.normalize().multiply(-1.0);
+        org.bukkit.util.Vector side = new org.bukkit.util.Vector(-backward.getZ(), 0, backward.getX());
+
+        // Spread animals in rows behind the player to avoid suffocation.
+        int row = index / 3;
+        int col = index % 3;
+        double lateral = (col - 1) * 1.6; // -1.6, 0, +1.6
+        double back = 1.8 + row * 1.7;
+
+        Location candidate = base.clone()
+            .add(backward.clone().multiply(back))
+            .add(side.clone().multiply(lateral));
+
+        for (int dy = 1; dy >= -2; dy--) {
+            Location test = candidate.clone().add(0, dy, 0);
+            if (test.getBlock().isPassable() && test.clone().add(0, 1, 0).getBlock().isPassable()) {
+                return test;
+            }
+        }
+
+        return candidate;
+    }
+    
+
 
     // Build a sign line with `prefix` on the left and `content` right-aligned
     private String formatSignLine(String prefix, String content, int targetWidth) {

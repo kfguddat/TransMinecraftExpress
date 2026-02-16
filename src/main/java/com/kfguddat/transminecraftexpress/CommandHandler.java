@@ -385,8 +385,20 @@ public class CommandHandler implements CommandExecutor {
                 // Temporary name, will be updated by auto-rename during recalculateLineDistances
                 // We'll use a unique temp name to avoid collisions until then
                 String tempName = "Pending_" + System.currentTimeMillis();
+
+                String d = "ALL";
+                // If user specifies a direction?
+                // For now, let's default to player facing if they are standing on rail.
+                BlockFace face = p.getFacing();
+                switch (face) {
+                    case NORTH: d = "N"; break;
+                    case SOUTH: d = "S"; break;
+                    case EAST: d = "E"; break;
+                    case WEST: d = "W"; break;
+                    default: d = "ALL"; break;
+                }
                 
-                LimiterEntry le = new LimiterEntry(tempName, speedSpec.toLowerCase(), loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+                LimiterEntry le = new LimiterEntry(tempName, speedSpec.toLowerCase(), loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), d);
                 
                 line.limiters.add(le);
                 
@@ -518,16 +530,18 @@ public class CommandHandler implements CommandExecutor {
         // /tmx set <key> <value>
         if (action.equals("set")) {
             if (args.length < 2) {
-                sender.sendMessage("Usage: /tmx set <accel|decel|scanspeed|speedval> ...");
+                sender.sendMessage("Usage: /tmx set <accel|decel|scanspeed|trainspacing|trains|animaltrains|suffocation|speedval> ...");
                 return true;
             }
             String key = args[1].toLowerCase(Locale.ROOT);
-            if (key.equals("accel") || key.equals("decel") || key.equals("scanspeed")) {
+            if (key.equals("accel") || key.equals("decel") || key.equals("scanspeed") || key.equals("trainspacing")) {
                 if (args.length < 3) { sender.sendMessage("Usage: /tmx set " + key + " <value>"); return true; }
                 double val;
                 try { val = Double.parseDouble(args[2]); } catch (Exception e) { sender.sendMessage("§cInvalid number."); return true; }
+                if (key.equals("trainspacing") && val <= 0.0) { sender.sendMessage("§ctrainspacing must be > 0."); return true; }
                 if (key.equals("accel")) network.setAccel(val);
                 else if (key.equals("decel")) network.setDecel(val);
+                else if (key.equals("trainspacing")) network.setTrainSpacing(val);
                 else network.setScanSpeed(val);
                 plugin.saveLines();
                 sender.sendMessage("§aSet " + key + " = " + val);
@@ -547,6 +561,30 @@ public class CommandHandler implements CommandExecutor {
                 network.setShowNextStationBar(v);
                 plugin.saveLines();
                 sender.sendMessage("§aSet nextstationbar = " + v);
+                return true;
+            }
+            if (key.equals("trains")) {
+                if (args.length < 3) { sender.sendMessage("Usage: /tmx set trains <true|false>"); return true; }
+                boolean v = Boolean.parseBoolean(args[2]);
+                network.setTrainsEnabled(v);
+                plugin.saveLines();
+                sender.sendMessage("§aSet trains = " + v);
+                return true;
+            }
+            if (key.equals("animaltrains")) {
+                if (args.length < 3) { sender.sendMessage("Usage: /tmx set animaltrains <true|false>"); return true; }
+                boolean v = Boolean.parseBoolean(args[2]);
+                network.setAnimalTrainsEnabled(v);
+                plugin.saveLines();
+                sender.sendMessage("§aSet animaltrains = " + v);
+                return true;
+            }
+            if (key.equals("suffocation")) {
+                if (args.length < 3) { sender.sendMessage("Usage: /tmx set suffocation <true|false>"); return true; }
+                boolean v = Boolean.parseBoolean(args[2]);
+                network.setSuffocationProtection(v);
+                plugin.saveLines();
+                sender.sendMessage("§aSet suffocation = " + v);
                 return true;
             }
             if (key.equals("speedval")) {
@@ -622,7 +660,7 @@ public class CommandHandler implements CommandExecutor {
                 sender.sendMessage("§aEnd point set for line '" + line.name + "' at current location (Dir: " + d + ").");
                 return true;
             }
-            sender.sendMessage("§cUnknown set key. Allowed: accel, decel, scanspeed, speedval, signprefix, nextstationbar, linecolor, end, collision");
+            sender.sendMessage("§cUnknown set key. Allowed: accel, decel, scanspeed, trainspacing, trains, animaltrains, suffocation, speedval, signprefix, nextstationbar, linecolor, end, collision");
             return true;
         }
 

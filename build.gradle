@@ -40,8 +40,17 @@ processResources {
     }
 }
 
+tasks.named('jar') {
+    archiveFileName = 'TransMinecraftExpress.jar'
+}
+
 tasks.register('copyPlugin', Copy) {
     dependsOn(tasks.named('jar'))
+    doFirst {
+        delete(fileTree(serverDir.toPath().resolve('plugins').toFile()) {
+            include 'TransMinecraftExpress-*.jar'
+        })
+    }
     from(tasks.named('jar'))
     into(serverDir.toPath().resolve('plugins').toFile())
 }

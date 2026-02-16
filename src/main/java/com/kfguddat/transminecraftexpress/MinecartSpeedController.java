@@ -19,6 +19,8 @@ import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Entity;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
 
 public class MinecartSpeedController {
     private final TransMinecraftExpress plugin;
@@ -47,6 +49,12 @@ public class MinecartSpeedController {
     }
     
     private BukkitRunnable task;
+
+    private void status(Entity entity, String message) {
+        if (entity instanceof Player) {
+            ((Player) entity).spigot().sendMessage(ChatMessageType.ACTION_BAR, TextComponent.fromLegacyText(message));
+        }
+    }
 
     public MinecartSpeedController(TransMinecraftExpress plugin, NetworkManager network) {
         this.plugin = plugin;
@@ -115,6 +123,28 @@ public class MinecartSpeedController {
         if (cart.getPersistentDataContainer().has(scanKey, PersistentDataType.BYTE)) {
             handleScanning(cart, line);
             return;
+        }
+        
+        // FOLLOW MODE: Check if this cart is a follower
+        NamespacedKey trainLeaderKey = new NamespacedKey(plugin, "train_leader");
+        if (cart.getPersistentDataContainer().has(trainLeaderKey, PersistentDataType.STRING)) {
+            if (!network.isTrainsEnabled()) {
+                cart.getPersistentDataContainer().remove(trainLeaderKey);
+            } else {
+            String leaderId = cart.getPersistentDataContainer().get(trainLeaderKey, PersistentDataType.STRING);
+            // Find leader entity
+            // Optimization: Maybe cache this lookup? For now, iterate world entities is slow, but getEntity(UUID) is fast if chunk loaded.
+            Entity leader = Bukkit.getEntity(java.util.UUID.fromString(leaderId));
+            if (leader != null && leader instanceof Minecart && leader.isValid()) {
+                handleFollowing(cart, (Minecart)leader, line);
+                updateFollowerBossBar(cart, line);
+                return; // Skip normal update
+            } else {
+                // Leader lost? Become independent.
+                 cart.getPersistentDataContainer().remove(trainLeaderKey);
+                 // Fall through to normal update
+            }
+            }
         }
 
         Integer targetIndex = cart.getPersistentDataContainer().get(indexKey, PersistentDataType.INTEGER);
@@ -201,19 +231,40 @@ public class MinecartSpeedController {
         // If not set, initialize with default or station speed? 
         // Logic: if no limit set, default to network default.
         if (currentLimit == null) {
-            currentLimit = network.getDefaultSpeedVal();
+            currentLimit = toPerTick(network.getDefaultSpeedVal());
         }
 
         // Check for limiters at current position
         int cx = cart.getLocation().getBlockX();
         int cy = cart.getLocation().getBlockY();
         int cz = cart.getLocation().getBlockZ();
+
+        // Calculate current moving direction for directional limits
+        Vector vel = cart.getVelocity();
+        String currentDir = "ALL";
+        if (vel.lengthSquared() > 0.0001) {
+            Vector n = vel.clone().normalize();
+            if (Math.abs(n.getX()) > Math.abs(n.getZ())) {
+                currentDir = n.getX() > 0 ? "E" : "W";
+            } else {
+                currentDir = n.getZ() > 0 ? "S" : "N";
+            }
+        }
         
         boolean limitUpdated = false;
+
         for (LimiterEntry lim : line.limiters) {
             if (!lim.worldName.equals(cart.getWorld().getName())) continue;
             // Check radius? Block exact match is safer for limiters to avoid flickering
             if (lim.x == cx && lim.y == cy && lim.z == cz) {
+                 // Direction Check
+                if (!"ALL".equalsIgnoreCase(lim.direction)) {
+                    // Start point directions: N means "leaving to North" (North is -Z)
+                    if (!lim.direction.equalsIgnoreCase(currentDir)) {
+                         continue; // Skip this limiter if direction doesn't match
+                    }
+                }
+                
                 double limSpeed = toPerTick(limiterSpeedFrom(lim));
                 currentLimit = limSpeed;
                 limitUpdated = true;
@@ -540,6 +591,62 @@ public class MinecartSpeedController {
              checkStuck(cart, line, info);
         }
     }
+
+    private void updateFollowerBossBar(Minecart cart, Line line) {
+        if (!network.isShowNextStationBar() || cart.getPassengers().isEmpty()) {
+            BossBar bar = cartBossBars.remove(cart.getUniqueId());
+            if (bar != null) bar.removeAll();
+            return;
+        }
+
+        BossBar bar = cartBossBars.computeIfAbsent(cart.getUniqueId(), k ->
+            Bukkit.createBossBar("Line Info", line.barColor, BarStyle.SOLID));
+
+        if (bar.getColor() != line.barColor) bar.setColor(line.barColor);
+
+        for (Entity e : cart.getPassengers()) {
+            if (e instanceof Player && !bar.getPlayers().contains((Player) e)) {
+                bar.addPlayer((Player) e);
+            }
+        }
+        for (Player p : bar.getPlayers()) {
+            if (!cart.getPassengers().contains(p)) bar.removePlayer(p);
+        }
+
+        Integer targetIndex = cart.getPersistentDataContainer().get(indexKey, PersistentDataType.INTEGER);
+        if (targetIndex == null) targetIndex = 0;
+
+        String nextName = "Next";
+        if (!line.stations.isEmpty()) {
+            if (targetIndex < 0) targetIndex = 0;
+            if (targetIndex >= line.stations.size()) targetIndex = line.stations.size() - 1;
+            nextName = line.stations.get(targetIndex).name;
+        }
+
+        String destName = "End";
+        if (!line.stations.isEmpty()) {
+            boolean circular = false;
+            if (line.startPoint != null && line.endPoint != null) {
+                if (line.startPoint.world.equals(line.endPoint.world) &&
+                    line.startPoint.x == line.endPoint.x &&
+                    line.startPoint.y == line.endPoint.y &&
+                    line.startPoint.z == line.endPoint.z) {
+                    circular = true;
+                }
+            }
+            destName = circular ? line.stations.get(0).name : line.stations.get(line.stations.size() - 1).name;
+        }
+
+        String title = "§7" + network.getSignPrefixLine1() + " " +
+                       line.getChatColor() + line.name + " " +
+                       "§7" + network.getSignPrefixLine3() + " " +
+                       line.getChatColor() + destName + " §7| " +
+                       line.getChatColor() + "→ " + nextName;
+
+        bar.setTitle(title);
+        bar.setProgress(1.0);
+        bar.setVisible(true);
+    }
     
     private void checkStuck(Minecart cart, Line line, StuckInfo info) {
          if (info.stuckTicks > 20) { // 1 second stuck
@@ -561,10 +668,235 @@ public class MinecartSpeedController {
               info.stuckTicks = 0;
               info.lastPos = target;
               // notify
-              cart.getPassengers().forEach(e -> e.sendMessage("§eDerail detected. Resetting to path."));
+              cart.getPassengers().forEach(e -> status(e, "§eDerail detected. Resetting to path."));
          }
     }
     
+
+    private void handleFollowing(Minecart follower, Minecart leader, Line line) {
+         double desiredDist = Math.max(0.5, network.getTrainSpacing());
+
+         if (line.verifiedPath.isEmpty()) {
+             Vector toLeader = leader.getLocation().toVector().subtract(follower.getLocation().toVector());
+             Vector leaderVel = leader.getVelocity();
+             double leaderSpeed = leaderVel.length();
+             double distErr = toLeader.length() - desiredDist;
+             double speedAdjust = clamp(distErr * 0.08, -0.15, 0.15);
+             double targetSpeed = Math.max(0.02, leaderSpeed + speedAdjust);
+
+             Vector desiredDir = toLeader.lengthSquared() > 0.0001 ? toLeader.normalize() : leaderVel.clone().normalize();
+             Vector desiredVel = desiredDir.multiply(targetSpeed);
+             Vector smoothed = follower.getVelocity().multiply(0.55).add(desiredVel.multiply(0.45));
+             follower.setVelocity(smoothed);
+             follower.setMaxSpeed(10.0);
+             return;
+         }
+
+         Integer leaderIdx = leader.getPersistentDataContainer().get(pathIndexKey, PersistentDataType.INTEGER);
+         if (leaderIdx == null) leaderIdx = 0;
+
+         int targetIdx = leaderIdx;
+         double distAcc = 0.0;
+         int foundIdx = -1;
+
+         boolean circular = false;
+         if (line.startPoint != null && line.endPoint != null) {
+             if (line.startPoint.world.equals(line.endPoint.world) &&
+                 line.startPoint.x == line.endPoint.x &&
+                 line.startPoint.y == line.endPoint.y &&
+                 line.startPoint.z == line.endPoint.z) {
+                 circular = true;
+             }
+         }
+
+         int curr = leaderIdx;
+         int safety = Math.min(200, Math.max(30, line.verifiedPath.size()));
+         while (safety-- > 0) {
+             int prev = curr - 1;
+             if (prev < 0) {
+                 if (circular) prev = line.verifiedPath.size() - 1;
+                 else break;
+             }
+             if (prev == curr) break;
+
+             Vector p1 = line.verifiedPath.get(prev);
+             Vector p2 = line.verifiedPath.get(curr);
+             distAcc += p1.distance(p2);
+
+             if (distAcc >= desiredDist) {
+                 foundIdx = prev;
+                 break;
+             }
+             curr = prev;
+         }
+
+         if (foundIdx != -1) targetIdx = foundIdx;
+         else targetIdx = curr;
+
+         int nextIdx = targetIdx + 1;
+         if (nextIdx >= line.verifiedPath.size()) {
+             nextIdx = circular ? 0 : targetIdx;
+         }
+
+         Vector pA = line.verifiedPath.get(targetIdx).clone().add(new Vector(0.5, 0, 0.5));
+         Vector pB = line.verifiedPath.get(nextIdx).clone().add(new Vector(0.5, 0, 0.5));
+         Vector segment = pB.clone().subtract(pA);
+         double segLen = segment.length();
+         double overshoot = Math.max(0.0, distAcc - desiredDist);
+         double t = 0.0;
+         if (segLen > 0.0001) {
+             t = clamp(1.0 - (overshoot / segLen), 0.0, 1.0);
+         }
+         Vector idealPos = pA.clone().add(segment.multiply(t));
+
+         follower.getPersistentDataContainer().set(pathIndexKey, PersistentDataType.INTEGER, targetIdx);
+
+         Vector currentPos = follower.getLocation().toVector();
+         Vector toIdeal = idealPos.clone().subtract(currentPos);
+         double distToIdeal = toIdeal.length();
+
+         // Use the same path guidance logic as leader carts.
+         Vector guideDir = getPathDirection(follower, line);
+         if (guideDir == null) guideDir = detectRailDirection(follower);
+         if (guideDir == null && toIdeal.lengthSquared() > 0.0001) guideDir = toIdeal.clone().normalize();
+
+         // Apply same off-track correction style as leader carts.
+         Integer idx = follower.getPersistentDataContainer().get(pathIndexKey, PersistentDataType.INTEGER);
+         if (idx != null) {
+             Vector pBest = line.verifiedPath.get(idx).clone().add(new Vector(0.5, 0, 0.5));
+             Vector closestOnTrack = pBest;
+             double minDistSq = Double.MAX_VALUE;
+
+             if (idx > 0) {
+                 Vector pPrev = line.verifiedPath.get(idx - 1).clone().add(new Vector(0.5, 0, 0.5));
+                 Vector pt = getClosestPointOnSegment(pPrev, pBest, currentPos);
+                 double d = pt.distanceSquared(currentPos);
+                 if (d < minDistSq) { minDistSq = d; closestOnTrack = pt; }
+             }
+             if (idx < line.verifiedPath.size() - 1) {
+                 Vector pNext = line.verifiedPath.get(idx + 1).clone().add(new Vector(0.5, 0, 0.5));
+                 Vector pt = getClosestPointOnSegment(pBest, pNext, currentPos);
+                 double d = pt.distanceSquared(currentPos);
+                 if (d < minDistSq) { minDistSq = d; closestOnTrack = pt; }
+             }
+
+             if (minDistSq > 9.0) {
+                 StuckInfo info = stuckMap.computeIfAbsent(follower.getUniqueId(), k -> new StuckInfo(currentPos));
+                 info.stuckTicks = 100;
+                 checkStuck(follower, line, info);
+                 return;
+             }
+
+             if (minDistSq > 0.04) {
+                 Vector correctionTarget = closestOnTrack.clone();
+                 if (Math.abs(correctionTarget.getY() - currentPos.getY()) < 1.0) {
+                     correctionTarget.setY(currentPos.getY());
+                 }
+                 Vector correction = correctionTarget.subtract(currentPos).multiply(0.2);
+                 Location newLoc = follower.getLocation().add(correction);
+                 newLoc.setDirection(follower.getLocation().getDirection());
+                 follower.teleport(newLoc);
+             }
+         }
+
+         if (guideDir == null || guideDir.lengthSquared() < 0.0001) {
+             guideDir = toIdeal.lengthSquared() > 0.0001 ? toIdeal.clone().normalize() : leader.getVelocity().clone();
+             if (guideDir.lengthSquared() < 0.0001) guideDir = new Vector(1, 0, 0);
+         }
+         guideDir.normalize();
+
+         double leaderSpeed = leader.getVelocity().length();
+         double followerSpeed = follower.getVelocity().length();
+         double physicalDist = leader.getLocation().toVector().distance(currentPos);
+         double distErr = physicalDist - desiredDist;
+
+         Integer followerIdxObj = follower.getPersistentDataContainer().get(pathIndexKey, PersistentDataType.INTEGER);
+         int followerIdx = followerIdxObj == null ? targetIdx : followerIdxObj;
+         int pathSize = line.verifiedPath.size();
+         int aheadDelta = followerIdx - leaderIdx;
+         if (circular) {
+             aheadDelta = ((followerIdx - leaderIdx) % pathSize + pathSize) % pathSize;
+             if (aheadDelta > pathSize / 2) aheadDelta -= pathSize;
+         }
+         boolean followerAhead = aheadDelta > 0;
+
+         // Hard index barrier: follower must never sit at/after leader index.
+         if (followerAhead) {
+             follower.getPersistentDataContainer().set(pathIndexKey, PersistentDataType.INTEGER, targetIdx);
+             followerIdx = targetIdx;
+         }
+
+         double targetSpeed = leaderSpeed
+                 + clamp(distErr * 0.10, -0.20, 0.20)
+                 + clamp((leaderSpeed - followerSpeed) * 0.30, -0.10, 0.10);
+
+         if (followerAhead) {
+             // Hard anti-overtake brake if follower reaches or passes leader's path index.
+             targetSpeed = Math.min(targetSpeed, Math.max(0.02, leaderSpeed - 0.18));
+         }
+
+         if (physicalDist < desiredDist * 0.90) {
+             targetSpeed = Math.min(targetSpeed, Math.max(0.02, leaderSpeed - 0.12));
+         } else if (physicalDist > desiredDist * 1.6) {
+             targetSpeed += 0.08;
+         }
+
+         if (physicalDist < desiredDist * 0.70) {
+             targetSpeed = Math.min(targetSpeed, 0.03);
+         }
+
+         if (distToIdeal < 0.35 && followerAhead) {
+             targetSpeed = 0.02;
+         }
+
+         // If the gap grows too large, force catch-up so spacing stays near configured trainspacing.
+         if (!followerAhead && distErr > 0.0) {
+             targetSpeed = Math.max(targetSpeed, leaderSpeed + clamp(distErr * 0.20, 0.05, 0.80));
+         }
+         if (!followerAhead && distErr > desiredDist) {
+             targetSpeed += 0.18;
+         }
+
+         // If we're close to ideal slot and clearly behind, avoid over-slowing.
+         if (!followerAhead && distErr > -0.10 && distErr < desiredDist * 0.20) {
+             targetSpeed = Math.max(targetSpeed, leaderSpeed * 0.98);
+         }
+         targetSpeed = Math.max(0.02, targetSpeed);
+
+         // Keep follower centered on its reserved trailing slot to avoid corner cut-in.
+         if (distToIdeal > 0.0001) {
+             Vector slotDir = toIdeal.clone().normalize();
+             guideDir = guideDir.multiply(0.70).add(slotDir.multiply(0.30));
+             if (guideDir.lengthSquared() > 0.0001) guideDir.normalize();
+         }
+
+         // Match leader speed handling style (slope-aware + accel/decel smoothing).
+         double hLen = Math.sqrt(guideDir.getX() * guideDir.getX() + guideDir.getZ() * guideDir.getZ());
+         double slopeFactor = (hLen < 0.1) ? 1.0 : (1.0 / hLen);
+         double adjustedTargetSpeed = targetSpeed * slopeFactor;
+
+         double virtSpeed;
+         if (follower.getPersistentDataContainer().has(speedKey, PersistentDataType.DOUBLE)) {
+             virtSpeed = follower.getPersistentDataContainer().get(speedKey, PersistentDataType.DOUBLE);
+         } else {
+             virtSpeed = followerSpeed;
+         }
+
+         double acc = network.getAccel();
+         double dec = network.getDecel();
+         if (virtSpeed < adjustedTargetSpeed) {
+             virtSpeed = Math.min(adjustedTargetSpeed, virtSpeed + acc);
+         } else if (virtSpeed > adjustedTargetSpeed) {
+             virtSpeed = Math.max(adjustedTargetSpeed, virtSpeed - dec);
+         }
+
+         follower.getPersistentDataContainer().set(speedKey, PersistentDataType.DOUBLE, virtSpeed);
+         Vector newVel = guideDir.clone().normalize().multiply(virtSpeed);
+
+         follower.setVelocity(newVel);
+         follower.setMaxSpeed(10.0);
+    }
+
     private void finishScan(Minecart cart, Line line) {
          // Only consider successful if we have more than 1 point (start point is added on creation)
          // and we have moved some distance
@@ -590,14 +922,14 @@ public class MinecartSpeedController {
              }
              
              line.endPoint = new Line.EndPoint(endLoc.getWorld().getName(), endLoc.getBlockX(), endLoc.getBlockY(), endLoc.getBlockZ(), d);
-             cart.getPassengers().forEach(e -> e.sendMessage("§aEnd Point automatically set to current location (Dir: " + line.endPoint.dir + ")."));
+             cart.getPassengers().forEach(e -> status(e, "§aEnd Point automatically set to current location (Dir: " + line.endPoint.dir + ")."));
 
              network.savePath(line);
              network.recalculateLineDistances(line, cart.getPassengers().isEmpty() ? null : (org.bukkit.command.CommandSender)cart.getPassengers().get(0));
              plugin.saveLines(); 
-             cart.getPassengers().forEach(e -> e.sendMessage("§aScan complete! Path saved. (" + line.verifiedPath.size() + " points)"));
+             cart.getPassengers().forEach(e -> status(e, "§aScan complete! Path saved. (" + line.verifiedPath.size() + " points)"));
          } else {
-             cart.getPassengers().forEach(e -> e.sendMessage("§cScan aborted: No path recorded (Did not move from start)."));
+             cart.getPassengers().forEach(e -> status(e, "§cScan aborted: No path recorded (Did not move from start)."));
          }
          cart.eject();
          cart.remove();
@@ -622,7 +954,7 @@ public class MinecartSpeedController {
                 
                 // Detailed feedback
                 final Block finalB = b;
-                cart.getPassengers().forEach(e -> e.sendMessage("§cScan stopped: Cart off rail at " + finalB.getX() + "," + finalB.getY() + "," + finalB.getZ()));
+                cart.getPassengers().forEach(e -> status(e, "§cScan stopped: Cart off rail at " + finalB.getX() + "," + finalB.getY() + "," + finalB.getZ()));
                 
                 finishScan(cart, line);
                 return;
@@ -676,7 +1008,7 @@ public class MinecartSpeedController {
                      }
                      
                      if (match) {
-                         cart.getPassengers().forEach(e -> e.sendMessage("§aLoop detected! Finishing scan automatically."));
+                         cart.getPassengers().forEach(e -> status(e, "§aLoop detected! Finishing scan automatically."));
                          // Ensure exact closure
                          line.verifiedPath.add(startVec);
                          finishScan(cart, line);
@@ -982,6 +1314,10 @@ public class MinecartSpeedController {
     private double toPerTick(double blocksPerSecond) {
         // convert blocks/second to blocks/tick (20 ticks per second)
         return blocksPerSecond / 20.0;
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 }
 
